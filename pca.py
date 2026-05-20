@@ -35,10 +35,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
-
 FEATURE_COLS = [
     "avg_finish_position",
     "avg_grid_position",
@@ -305,100 +302,148 @@ def plot_cumulative_variance(
     return ax
 
 
-# Plot biplot
+# Plot biplot (interactive Plotly)
 def plot_biplot(
     X_pca: pd.DataFrame,
     pca: PCA,
     meta: pd.DataFrame,
     pc_x: int = 1,
     pc_y: int = 2,
-    ax=None,
-) -> plt.Axes:
+):
     """
-    Biplot: driver positions in PC space with feature loading arrows overlaid.
+    Interactive Plotly biplot — driver scatter with feature loading arrows.
 
-    The scatter shows where each driver lands after PCA transformation.
-    The arrows show how strongly and in what direction each original feature
-    pulls — arrows pointing the same way are correlated; opposite = negatively
-    correlated. Driver names are annotated on hover (static labels would
-    overlap at 77 points, so we label a few standout drivers only).
+    Hover any dot to see the driver's name, nationality, and total races.
+    Each arrow is a feature loading — direction shows correlation with PCs,
+    length shows strength of influence. Arrows pointing the same way are
+    correlated; opposite directions mean negatively correlated.
+
+    Use in report.ipynb:
+        fig = plot_biplot(results['X_pca'], results['pca'], results['meta'])
+        fig.show()
 
     Parameters
     ----------
     X_pca  : transformed coordinate DataFrame (output of run_pca).
-    pca    : fitted PCA object (for loadings and variance ratios).
-    meta   : metadata DataFrame (for driver names).
-    pc_x   : which PC to put on the x-axis (1-indexed, default 1).
-    pc_y   : which PC to put on the y-axis (1-indexed, default 2).
-    ax     : optional matplotlib Axes.
+    pca    : fitted PCA object.
+    meta   : metadata DataFrame with driver_name, nationality, total_races.
+    pc_x   : PC on x-axis (1-indexed, default 1).
+    pc_y   : PC on y-axis (1-indexed, default 2).
 
     Returns
     -------
-    ax : matplotlib Axes.
+    plotly Figure — call .show() in a notebook or .write_html() to save.
     """
-    if ax is None:
-        _, ax = plt.subplots(figsize=(10, 8))
+    import plotly.graph_objects as go
 
-    cx = f"PC{pc_x}"
-    cy = f"PC{pc_y}"
+    cx  = f"PC{pc_x}"
+    cy  = f"PC{pc_y}"
+    var_x = round(pca.explained_variance_ratio_[pc_x - 1] * 100, 1)
+    var_y = round(pca.explained_variance_ratio_[pc_y - 1] * 100, 1)
 
-    # Scatter drivers
-    ax.scatter(
-        X_pca[cx], X_pca[cy],
-        color="#4C72B0", alpha=0.6, s=40, zorder=3,
-    )
+    plot_df = meta.reset_index(drop=True).copy()
+    plot_df["x"] = X_pca[cx].values
+    plot_df["y"] = X_pca[cy].values
 
-    # Annotate a few standout drivers for interpretation
-    highlight = [
-        "Lewis Hamilton", "Michael Schumacher", "Max Verstappen",
-        "Fernando Alonso", "Kimi Räikkönen", "Sebastian Vettel",
-        "Romain Grosjean", "Pastor Maldonado",
-    ]
-    meta_reset = meta.reset_index(drop=True)
-    for idx, row in meta_reset.iterrows():
-        if row["driver_name"] in highlight:
-            ax.annotate(
-                row["driver_name"],
-                (X_pca[cx].iloc[idx], X_pca[cy].iloc[idx]),
-                fontsize=7.5,
-                xytext=(4, 4),
-                textcoords="offset points",
-                path_effects=[pe.withStroke(linewidth=2, foreground="white")],
-            )
-
-    # Loading arrows (scale to fit the scatter)
-    scale = (X_pca[cx].abs().max() + X_pca[cy].abs().max()) / 2
+    # Arrow scaling — fit inside 35% of each axis range
+    x_range = X_pca[cx].max() - X_pca[cx].min()
+    y_range = X_pca[cy].max() - X_pca[cy].min()
     loadings_x = pca.components_[pc_x - 1]
     loadings_y = pca.components_[pc_y - 1]
+    max_loading = max(np.abs(loadings_x).max(), np.abs(loadings_y).max())
+    sx = (x_range * 0.35) / max_loading
+    sy = (y_range * 0.35) / max_loading
 
+    FEATURE_LABELS = {
+        "avg_finish_position":   "Finish position",
+        "avg_grid_position":     "Grid position",
+        "avg_points_per_race":   "Points / race",
+        "win_rate":              "Win rate",
+        "podium_rate":           "Podium rate",
+        "dnf_rate":              "DNF rate",
+        "avg_fastest_lap_speed": "Fastest lap speed",
+        "avg_best_quali_time":   "Best quali time",
+    }
+
+    fig = go.Figure()
+
+    # Driver scatter
+    fig.add_trace(go.Scatter(
+        x=plot_df["x"],
+        y=plot_df["y"],
+        mode="markers",
+        name="Drivers",
+        marker=dict(color="#4C72B0", size=8, opacity=0.75,
+                    line=dict(width=0.8, color="white")),
+        customdata=np.stack([
+            plot_df["driver_name"],
+            plot_df["nationality"],
+            plot_df["total_races"],
+            plot_df["x"].round(2),
+            plot_df["y"].round(2),
+        ], axis=-1),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Nationality: %{customdata[1]}<br>"
+            "Career races: %{customdata[2]}<br>"
+            f"{cx}: %{{customdata[3]}}  |  {cy}: %{{customdata[4]}}"
+            "<extra></extra>"
+        ),
+    ))
+
+    # Loading arrows
     for i, feat in enumerate(FEATURE_COLS):
-        ax.annotate(
-            "",
-            xy=(loadings_x[i] * scale, loadings_y[i] * scale),
-            xytext=(0, 0),
-            arrowprops=dict(arrowstyle="->", color="#C44E52", lw=1.5),
-            zorder=4,
+        ex = loadings_x[i] * sx
+        ey = loadings_y[i] * sy
+        label = FEATURE_LABELS.get(feat, feat)
+        nudge = 0.08
+        nx = ex + nudge * np.sign(ex + 1e-9)
+        ny = ey + nudge * np.sign(ey + 1e-9)
+
+        fig.add_annotation(
+            x=ex, y=ey, ax=0, ay=0,
+            axref="x", ayref="y", xref="x", yref="y",
+            showarrow=True, arrowhead=3,
+            arrowsize=1.2, arrowwidth=2,
+            arrowcolor="#C44E52",
         )
-        ax.text(
-            loadings_x[i] * scale * 1.12,
-            loadings_y[i] * scale * 1.12,
-            feat.replace("avg_", "").replace("_", " "),
-            fontsize=8,
-            color="#C44E52",
-            ha="center",
+        fig.add_annotation(
+            x=nx, y=ny,
+            text=f"<b>{label}</b>",
+            showarrow=False,
+            font=dict(size=10, color="#C44E52"),
+            xref="x", yref="y",
+            xanchor="center",
         )
 
-    var_x = pca.explained_variance_ratio_[pc_x - 1] * 100
-    var_y = pca.explained_variance_ratio_[pc_y - 1] * 100
+    # Zero reference lines
+    fig.add_shape(type="line",
+        x0=X_pca[cx].min() - 0.5, x1=X_pca[cx].max() + 0.5, y0=0, y1=0,
+        line=dict(color="rgba(100,100,100,0.3)", width=1, dash="dot"))
+    fig.add_shape(type="line",
+        x0=0, x1=0,
+        y0=X_pca[cy].min() - 0.5, y1=X_pca[cy].max() + 0.5,
+        line=dict(color="rgba(100,100,100,0.3)", width=1, dash="dot"))
 
-    ax.set_xlabel(f"{cx} ({var_x:.1f}% variance)")
-    ax.set_ylabel(f"{cy} ({var_y:.1f}% variance)")
-    ax.set_title(f"PCA Biplot — {cx} vs {cy}")
-    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
-    ax.axvline(0, color="gray", linewidth=0.5, linestyle="--")
-    ax.spines[["top", "right"]].set_visible(False)
+    fig.update_layout(
+        template="plotly_white",
+        title=dict(
+            text="<b>PCA Biplot — F1 Driver Performance (2000–2024)</b>",
+            font=dict(size=16), x=0.5, xanchor="center",
+        ),
+        xaxis=dict(title=f"{cx} — {var_x}% variance explained",
+                   showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=False),
+        yaxis=dict(title=f"{cy} — {var_y}% variance explained",
+                   showgrid=True, gridcolor="rgba(0,0,0,0.06)", zeroline=False),
+        hoverlabel=dict(bgcolor="white", font_size=12),
+        showlegend=False,
+        width=820, height=600,
+        margin=dict(l=60, r=40, t=60, b=60),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
 
-    return ax
+    return fig
 
 
 # Full pipeline

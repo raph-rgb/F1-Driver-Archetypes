@@ -219,7 +219,7 @@ def plot_fusion_levels(Z: np.ndarray, ax=None):
         fig = ax.get_figure()
 
     alpha = pd.Series(Z[:, 2]) - pd.Series(Z[:, 2]).shift(1).fillna(0)
-    n_range = range(2, len(alpha) + 1)
+    n_range = range(1, len(alpha) + 1)
 
     ax.plot(n_range, alpha[::-1].to_numpy(), "o-", lw=2, color="tab:blue")
     ax.spines[["top", "right"]].set_visible(False)
